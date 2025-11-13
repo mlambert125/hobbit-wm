@@ -12,37 +12,17 @@ use smithay::{
     reexports::calloop::EventLoop,
     utils::{Rectangle, Transform},
 };
-use tracing::info;
 
-use crate::{CallLoopData, HobbitCompositor};
+use crate::{CalloopData, HobbitWm};
 
-pub unsafe fn init_winit(
-    event_loop: &mut EventLoop<CallLoopData>,
-    data: &mut CallLoopData,
+pub fn init_winit(
+    event_loop: &mut EventLoop<CalloopData>,
+    data: &mut CalloopData,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let display_handle = &mut data.display_handle;
-    let compositor = &mut data.compositor;
+    let state = &mut data.compositor;
 
-    info!(
-        "Running winit backend on WAYLAND_DISPLAY={}",
-        compositor
-            .socket_name
-            .to_str()
-            .expect("Socket name should be valid UTF-8")
-    );
-    unsafe {
-        std::env::set_var("WAYLAND_DISPLAY", &compositor.socket_name);
-    }
-
-    let display_env = std::env::var("WAYLAND_DISPLAY").ok().unwrap();
-    info!("WAYLAND_DISPLAY is set to {}", display_env);
-
-    info!("Initializing winit backend...");
     let (mut backend, winit) = winit::init()?;
-    info!(
-        "Winit backend initialized with size {:?}",
-        backend.window_size()
-    );
 
     let mode = Mode {
         size: backend.window_size(),
@@ -58,7 +38,7 @@ pub unsafe fn init_winit(
             model: "Winit".into(),
         },
     );
-    let _global = output.create_global::<HobbitCompositor>(display_handle);
+    let _global = output.create_global::<HobbitWm>(display_handle);
     output.change_current_state(
         Some(mode),
         Some(Transform::Flipped180),
@@ -67,15 +47,19 @@ pub unsafe fn init_winit(
     );
     output.set_preferred(mode);
 
-    compositor.space.map_output(&output, (0, 0));
+    state.space.map_output(&output, (0, 0));
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
+
+    unsafe {
+        std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
+    }
 
     event_loop
         .handle()
         .insert_source(winit, move |event, _, data| {
             let display = &mut data.display_handle;
-            let compositor = &mut data.compositor;
+            let state = &mut data.compositor;
 
             match event {
                 WinitEvent::Resized { size, .. } => {
@@ -89,7 +73,7 @@ pub unsafe fn init_winit(
                         None,
                     );
                 }
-                WinitEvent::Input(event) => compositor.process_input_event(event),
+                WinitEvent::Input(event) => state.process_input_event(event),
                 WinitEvent::Redraw => {
                     let size = backend.window_size();
                     let damage = Rectangle::from_size(size);
@@ -107,7 +91,7 @@ pub unsafe fn init_winit(
                             &mut framebuffer,
                             1.0,
                             0,
-                            [&compositor.space],
+                            [&state.space],
                             &[],
                             &mut damage_tracker,
                             [0.1, 0.1, 0.1, 1.0],
@@ -116,24 +100,24 @@ pub unsafe fn init_winit(
                     }
                     backend.submit(Some(&[damage])).unwrap();
 
-                    compositor.space.elements().for_each(|window| {
+                    state.space.elements().for_each(|window| {
                         window.send_frame(
                             &output,
-                            compositor.start_time.elapsed(),
+                            state.start_time.elapsed(),
                             Some(Duration::ZERO),
                             |_, _| Some(output.clone()),
                         )
                     });
 
-                    compositor.space.refresh();
-                    compositor.popups.cleanup();
+                    state.space.refresh();
+                    state.popups.cleanup();
                     let _ = display.flush_clients();
 
                     // Ask for redraw to schedule new frame.
                     backend.window().request_redraw();
                 }
                 WinitEvent::CloseRequested => {
-                    compositor.loop_signal.stop();
+                    state.loop_signal.stop();
                 }
                 _ => (),
             };
