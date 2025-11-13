@@ -1,5 +1,5 @@
 {
-  description = "Burn Bar development environment flake";
+  description = "Smithay Compositor Development Environment";
 
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";

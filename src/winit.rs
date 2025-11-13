@@ -25,15 +25,20 @@ pub unsafe fn init_winit(
 
     info!(
         "Running winit backend on WAYLAND_DISPLAY={}",
-        compositor.socket_name.to_str().unwrap_or("<invalid UTF-8>")
+        compositor
+            .socket_name
+            .to_str()
+            .expect("Socket name should be valid UTF-8")
     );
     unsafe {
         std::env::set_var("WAYLAND_DISPLAY", &compositor.socket_name);
     }
+
+    let display_env = std::env::var("WAYLAND_DISPLAY").ok().unwrap();
+    info!("WAYLAND_DISPLAY is set to {}", display_env);
+
     info!("Initializing winit backend...");
-
     let (mut backend, winit) = winit::init()?;
-
     info!(
         "Winit backend initialized with size {:?}",
         backend.window_size()

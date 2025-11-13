@@ -1,13 +1,19 @@
 use std::{ffi::OsString, sync::Arc};
 
 use smithay::{
-    backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+    backend::{
+        input::{
+            AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
+            KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        },
+        renderer::utils::on_commit_buffer_handler,
     },
     delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
     delegate_xdg_shell,
-    desktop::{PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{
+        PopupKind, PopupManager, Space, Window, WindowSurfaceType, find_popup_root_surface,
+        get_popup_toplevel_coords,
+    },
     input::{
         Seat, SeatHandler, SeatState,
         keyboard::FilterResult,
@@ -15,28 +21,36 @@ use smithay::{
     },
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
-            Display, DisplayHandle,
+            Display, DisplayHandle, Resource,
             backend::{ClientData, ClientId, DisconnectReason},
-            protocol::{wl_buffer, wl_surface::WlSurface},
+            protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
         },
     },
-    utils::{Logical, Point, SERIAL_COUNTER},
+    utils::{Logical, Point, SERIAL_COUNTER, Serial},
     wayland::{
         buffer::BufferHandler,
-        compositor::{CompositorClientState, CompositorHandler, CompositorState},
+        compositor::{
+            CompositorClientState, CompositorHandler, CompositorState, get_parent,
+            is_sync_subsurface, with_states,
+        },
         output::{OutputHandler, OutputManagerState},
         selection::{
             SelectionHandler,
             data_device::{
                 ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+                set_data_device_focus,
             },
         },
-        shell::xdg::{XdgShellHandler, XdgShellState},
+        shell::xdg::{
+            PopupSurface, ToplevelSurface, XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
+        },
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
     },
 };
+use tracing::info;
 
 use crate::CallLoopData;
 
@@ -65,7 +79,6 @@ impl HobbitCompositor {
         let start_time = std::time::Instant::now();
 
         let dh = display.handle();
-
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
@@ -77,12 +90,40 @@ impl HobbitCompositor {
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "winit");
 
         seat.add_keyboard(Default::default(), 200, 25).unwrap();
-
         seat.add_pointer();
 
         let space = Space::default();
 
-        let socket_name = Self::init_wayland_listener(display, event_loop);
+        info!("Initializing Wayland listener...");
+        let listening_socket = ListeningSocketSource::new_auto().unwrap();
+        let socket_name = listening_socket.socket_name().to_os_string();
+        let loop_handle = event_loop.handle();
+
+        info!("Adding Wayland listener to event loop...");
+        loop_handle
+            .insert_source(listening_socket, move |client_stream, _, state| {
+                state
+                    .display_handle
+                    .insert_client(client_stream, Arc::new(ClientState::default()))
+                    .unwrap();
+            })
+            .expect("Adding the listening socket to the event loop should never fail");
+
+        info!("Adding Wayland display to event loop...");
+        loop_handle
+            .insert_source(
+                Generic::new(display, Interest::READ, Mode::Level),
+                |_, display, state| {
+                    unsafe {
+                        display
+                            .get_mut()
+                            .dispatch_clients(&mut state.compositor)
+                            .unwrap();
+                    }
+                    Ok(PostAction::Continue)
+                },
+            )
+            .expect("Adding the Wayland display to the event loop should never fail");
 
         let loop_signal = event_loop.get_signal();
 
@@ -103,41 +144,6 @@ impl HobbitCompositor {
             popups,
             seat,
         }
-    }
-
-    fn init_wayland_listener(
-        display: Display<HobbitCompositor>,
-        event_loop: &mut EventLoop<CallLoopData>,
-    ) -> OsString {
-        let listening_socket = ListeningSocketSource::new_auto().unwrap();
-        let socket_name = listening_socket.socket_name().to_os_string();
-        let loop_handle = event_loop.handle();
-
-        loop_handle
-            .insert_source(listening_socket, move |client_stream, _, state| {
-                state
-                    .display_handle
-                    .insert_client(client_stream, Arc::new(ClientState::default()))
-                    .unwrap();
-            })
-            .expect("Failed to init the wayland event source.");
-
-        loop_handle
-            .insert_source(
-                Generic::new(display, Interest::READ, Mode::Level),
-                |_, display, state| {
-                    unsafe {
-                        display
-                            .get_mut()
-                            .dispatch_clients(&mut state.compositor)
-                            .unwrap();
-                    }
-                    Ok(PostAction::Continue)
-                },
-            )
-            .unwrap();
-
-        socket_name
     }
 
     pub fn surface_under(
@@ -280,40 +286,144 @@ impl HobbitCompositor {
             _ => {}
         }
     }
+
+    fn unconstrain_popup(&self, popup: &PopupSurface) {
+        let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
+            return;
+        };
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().unwrap().wl_surface() == &root)
+        else {
+            return;
+        };
+
+        let output = self.space.outputs().next().unwrap();
+        let output_geo = self.space.output_geometry(output).unwrap();
+        let window_geo = self.space.element_geometry(window).unwrap();
+
+        // The target geometry for the positioner should be relative to its parent's geometry, so
+        // we will compute that here.
+        let mut target = output_geo;
+        target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+        target.loc -= window_geo.loc;
+
+        popup.with_pending_state(|state| {
+            state.geometry = state.positioner.get_unconstrained_geometry(target);
+        });
+    }
+
+    pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: &WlSurface) {
+        // Handle toplevel commits.
+        if let Some(window) = space
+            .elements()
+            .find(|w| w.toplevel().unwrap().wl_surface() == surface)
+            .cloned()
+        {
+            let initial_configure_sent = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .initial_configure_sent
+            });
+
+            if !initial_configure_sent {
+                window.toplevel().unwrap().send_configure();
+            }
+        }
+
+        // Handle popup commits.
+        popups.commit(surface);
+        if let Some(popup) = popups.find_popup(surface) {
+            match popup {
+                PopupKind::Xdg(ref xdg) => {
+                    if !xdg.is_initial_configure_sent() {
+                        xdg.send_configure()
+                            .expect("Initial configure should never fail as it is always allowed");
+                    }
+                }
+                PopupKind::InputMethod(ref _input_method) => {}
+            }
+        }
+    }
 }
 
+// =============================================================================
+//  Compositor implementations
+// =============================================================================
 impl BufferHandler for HobbitCompositor {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
 }
 
 impl CompositorHandler for HobbitCompositor {
     fn compositor_state(&mut self) -> &mut smithay::wayland::compositor::CompositorState {
-        todo!()
+        &mut self.compositor_state
     }
 
     fn client_compositor_state<'a>(
         &self,
         client: &'a smithay::reexports::wayland_server::Client,
     ) -> &'a smithay::wayland::compositor::CompositorClientState {
-        todo!()
+        &client.get_data::<ClientState>().unwrap().compositor_state
     }
 
     fn commit(
         &mut self,
         surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     ) {
-        todo!()
+        on_commit_buffer_handler::<Self>(surface);
+        if !is_sync_subsurface(surface) {
+            let mut root = surface.clone();
+            while let Some(parent) = get_parent(&root) {
+                root = parent;
+            }
+            if let Some(window) = self
+                .space
+                .elements()
+                .find(|w| w.toplevel().unwrap().wl_surface() == &root)
+            {
+                window.on_commit();
+            }
+        }
+
+        HobbitCompositor::handle_commit(&mut self.popups, &self.space, surface);
     }
 }
 delegate_compositor!(HobbitCompositor);
 
+impl ShmHandler for HobbitCompositor {
+    fn shm_state(&self) -> &smithay::wayland::shm::ShmState {
+        &self.shm_state
+    }
+}
+delegate_shm!(HobbitCompositor);
+
+// =============================================================================
+//  Misc implementations
+// =============================================================================
 impl SeatHandler for HobbitCompositor {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
     fn seat_state(&mut self) -> &mut smithay::input::SeatState<Self> {
-        todo!()
+        &mut self.seat_state
+    }
+    fn cursor_image(
+        &mut self,
+        _seat: &Seat<Self>,
+        _image: smithay::input::pointer::CursorImageStatus,
+    ) {
+    }
+
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        let dh = &self.display_handle;
+        let client = focused.and_then(|s| dh.get_client(s.id()).ok());
+        set_data_device_focus(dh, seat, client);
     }
 }
 delegate_seat!(HobbitCompositor);
@@ -322,47 +432,40 @@ impl SelectionHandler for HobbitCompositor {
     type SelectionUserData = ();
 }
 
-impl ClientDndGrabHandler for HobbitCompositor {}
-impl ServerDndGrabHandler for HobbitCompositor {}
-
 impl DataDeviceHandler for HobbitCompositor {
-    fn data_device_state(&self) -> &smithay::wayland::selection::data_device::DataDeviceState {
-        todo!()
+    fn data_device_state(&self) -> &DataDeviceState {
+        &self.data_device_state
     }
 }
 delegate_data_device!(HobbitCompositor);
 
-impl ShmHandler for HobbitCompositor {
-    fn shm_state(&self) -> &smithay::wayland::shm::ShmState {
-        todo!()
-    }
-}
-delegate_shm!(HobbitCompositor);
+impl ClientDndGrabHandler for HobbitCompositor {}
+impl ServerDndGrabHandler for HobbitCompositor {}
 
+impl OutputHandler for HobbitCompositor {}
+
+delegate_output!(HobbitCompositor);
+
+// =============================================================================
+//  Xdg Implementations
+// =============================================================================
 impl XdgShellHandler for HobbitCompositor {
     fn xdg_shell_state(&mut self) -> &mut smithay::wayland::shell::xdg::XdgShellState {
-        todo!()
+        &mut self.xdg_shell_state
     }
 
     fn new_toplevel(&mut self, surface: smithay::wayland::shell::xdg::ToplevelSurface) {
-        todo!()
+        let window = Window::new_wayland_window(surface);
+        self.space.map_element(window, (0, 0), false);
     }
 
     fn new_popup(
         &mut self,
         surface: smithay::wayland::shell::xdg::PopupSurface,
-        positioner: smithay::wayland::shell::xdg::PositionerState,
+        _positioner: smithay::wayland::shell::xdg::PositionerState,
     ) {
-        todo!()
-    }
-
-    fn grab(
-        &mut self,
-        surface: smithay::wayland::shell::xdg::PopupSurface,
-        seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat,
-        serial: smithay::utils::Serial,
-    ) {
-        todo!()
+        self.unconstrain_popup(&surface);
+        let _ = self.popups.track_popup(PopupKind::Xdg(surface));
     }
 
     fn reposition_request(
@@ -371,23 +474,42 @@ impl XdgShellHandler for HobbitCompositor {
         positioner: smithay::wayland::shell::xdg::PositionerState,
         token: u32,
     ) {
+        surface.with_pending_state(|state| {
+            let geometry = positioner.get_geometry();
+
+            state.geometry = geometry;
+            state.positioner = positioner;
+        });
+        self.unconstrain_popup(&surface);
+        surface.send_repositioned(token);
+    }
+
+    fn move_request(&mut self, _surface: ToplevelSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
+    }
+
+    fn resize_request(
+        &mut self,
+        _surface: ToplevelSurface,
+        _seat: wl_seat::WlSeat,
+        _serial: Serial,
+        _edges: xdg_toplevel::ResizeEdge,
+    ) {
+    }
+
+    fn grab(
+        &mut self,
+        _surface: smithay::wayland::shell::xdg::PopupSurface,
+        _seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat,
+        _serial: smithay::utils::Serial,
+    ) {
         todo!()
     }
 }
 delegate_xdg_shell!(HobbitCompositor);
 
-impl OutputHandler for HobbitCompositor {
-    fn output_bound(
-        &mut self,
-        _output: smithay::output::Output,
-        _wl_output: smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
-    ) {
-        todo!()
-    }
-}
-
-delegate_output!(HobbitCompositor);
-
+// =============================================================================
+//  Client State
+// =============================================================================
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
