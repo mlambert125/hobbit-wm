@@ -51,12 +51,13 @@ impl HobbitWm {
         event_loop: &mut EventLoop<CalloopData>,
         dh: DisplayHandle,
         socket_name: OsString,
+        seat_name: &str,
     ) -> Self {
         let start_time = std::time::Instant::now();
 
         let space = Space::default();
         let mut seat_state = SeatState::new();
-        let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "winit");
+        let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, seat_name);
         seat.add_keyboard(Default::default(), 600, 25).unwrap();
         seat.add_pointer();
         let loop_signal = event_loop.get_signal();

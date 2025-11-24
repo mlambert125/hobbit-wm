@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .unwrap();
 
-    let state = HobbitWm::new(&mut event_loop, dh, socket_name);
+    let state = HobbitWm::new(&mut event_loop, dh, socket_name, "winit");
 
     let mut data = CalloopData {
         compositor: state,
@@ -70,9 +70,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     crate::winit::init_winit(&mut event_loop, &mut data)?;
-
-    std::process::Command::new("alacritty").spawn().ok();
-
     event_loop.run(None, &mut data, move |_| {})?;
     Ok(())
 }
