@@ -3,21 +3,15 @@
 
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";
-    fenix.url = "github:nix-community/fenix";
   };
 
   outputs = {
-    self,
     nixpkgs,
     flake-utils,
-    fenix,
+    ...
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs {inherit system;};
-      rust = fenix.packages.${system}.complete.toolchain;
-      rust-analyzer = fenix.packages.${system}.complete.rust-analyzer;
-      clippy = fenix.packages.${system}.complete.clippy;
-      rustfmt = fenix.packages.${system}.complete.rustfmt;
       libPackages = with pkgs; [
         udev
         seatd
@@ -35,10 +29,6 @@
         packages = with pkgs;
           [
             # languages / tooling
-            rust
-            rust-analyzer
-            rustfmt
-            clippy
             nixd
             alejandra
             pkg-config

@@ -13,13 +13,12 @@ use smithay::{
     utils::{Rectangle, Transform},
 };
 
-use crate::{CalloopData, HobbitWm};
+use crate::CalloopData;
 
 pub fn init_winit(
     event_loop: &mut EventLoop<CalloopData>,
     data: &mut CalloopData,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let display_handle = &mut data.display_handle;
     let state = &mut data.compositor;
 
     let (mut backend, winit) = winit::init()?;
@@ -36,9 +35,9 @@ pub fn init_winit(
             subpixel: Subpixel::Unknown,
             make: "Smithay".into(),
             model: "Winit".into(),
+            serial_number: "Unknown".into(),
         },
     );
-    let _global = output.create_global::<HobbitWm>(display_handle);
     output.change_current_state(
         Some(mode),
         Some(Transform::Flipped180),
@@ -112,8 +111,6 @@ pub fn init_winit(
                     state.space.refresh();
                     state.popups.cleanup();
                     let _ = display.flush_clients();
-
-                    // Ask for redraw to schedule new frame.
                     backend.window().request_redraw();
                 }
                 WinitEvent::CloseRequested => {

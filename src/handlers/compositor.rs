@@ -1,18 +1,12 @@
-use crate::{HobbitWm, grabs::resize_grab, state::ClientState};
+use crate::{HobbitWm, state::ClientState};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
-    delegate_compositor, delegate_shm,
-    reexports::wayland_server::{
-        Client,
-        protocol::{wl_buffer, wl_surface::WlSurface},
-    },
-    wayland::{
-        buffer::BufferHandler,
-        compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, get_parent,
-            is_sync_subsurface,
-        },
-        shm::{ShmHandler, ShmState},
+    delegate_compositor,
+    desktop::WindowSurfaceType,
+    reexports::wayland_server::{Client, protocol::wl_surface::WlSurface},
+    utils::{Logical, Point},
+    wayland::compositor::{
+        CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface,
     },
 };
 
@@ -44,19 +38,21 @@ impl CompositorHandler for HobbitWm {
         };
 
         xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
-        resize_grab::handle_commit(&mut self.space, surface);
     }
 }
-
-impl BufferHandler for HobbitWm {
-    fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
-}
-
-impl ShmHandler for HobbitWm {
-    fn shm_state(&self) -> &ShmState {
-        &self.shm_state
-    }
-}
-
 delegate_compositor!(HobbitWm);
-delegate_shm!(HobbitWm);
+
+impl HobbitWm {
+    pub fn surface_under(
+        &self,
+        pos: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        self.space
+            .element_under(pos)
+            .and_then(|(window, location)| {
+                window
+                    .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                    .map(|(s, p)| (s, (p + location).to_f64()))
+            })
+    }
+}

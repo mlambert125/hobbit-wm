@@ -1,36 +1,23 @@
 use smithay::{
-    delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_xdg_shell,
     desktop::{
         PopupKind, PopupManager, Space, Window, find_popup_root_surface, get_popup_toplevel_coords,
-        space::SpaceElement,
-    },
-    input::{
-        Seat,
-        pointer::{Focus, GrabStartData as PointerGrabStartData},
     },
     reexports::{
-        wayland_protocols::xdg::{
-            decoration::zv1::server::zxdg_toplevel_decoration_v1, shell::server::xdg_toplevel,
-        },
-        wayland_server::{
-            Resource,
-            protocol::{wl_seat, wl_surface::WlSurface},
-        },
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_server::protocol::{wl_seat, wl_surface::WlSurface},
     },
-    utils::{Rectangle, SERIAL_COUNTER, Serial},
+    utils::{SERIAL_COUNTER, Serial},
     wayland::{
         compositor::with_states,
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            XdgToplevelSurfaceData, decoration::XdgDecorationHandler,
+            XdgToplevelSurfaceData,
         },
     },
 };
 
-use crate::{
-    HobbitWm,
-    grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
-};
+use crate::HobbitWm;
 
 impl XdgShellHandler for HobbitWm {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -69,102 +56,21 @@ impl XdgShellHandler for HobbitWm {
         surface.send_repositioned(token);
     }
 
-    fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
-        let seat = Seat::from_resource(&seat).unwrap();
-
-        let wl_surface = surface.wl_surface();
-
-        if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
-            let pointer = seat.get_pointer().unwrap();
-
-            let window = self
-                .space
-                .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == wl_surface)
-                .unwrap()
-                .clone();
-            let initial_window_location = self.space.element_location(&window).unwrap();
-
-            let grab = MoveSurfaceGrab {
-                start_data,
-                window,
-                initial_window_location,
-            };
-
-            pointer.set_grab(self, grab, serial, Focus::Clear);
-        }
+    fn move_request(&mut self, _surface: ToplevelSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
     }
 
     fn resize_request(
         &mut self,
-        surface: ToplevelSurface,
-        seat: wl_seat::WlSeat,
-        serial: Serial,
-        edges: xdg_toplevel::ResizeEdge,
+        _surface: ToplevelSurface,
+        _seat: wl_seat::WlSeat,
+        _serial: Serial,
+        _edges: xdg_toplevel::ResizeEdge,
     ) {
-        let seat = Seat::from_resource(&seat).unwrap();
-
-        let wl_surface = surface.wl_surface();
-
-        if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
-            let pointer = seat.get_pointer().unwrap();
-
-            let window = self
-                .space
-                .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == wl_surface)
-                .unwrap()
-                .clone();
-            let initial_window_location = self.space.element_location(&window).unwrap();
-            let initial_window_size = window.geometry().size;
-
-            surface.with_pending_state(|state| {
-                state.states.set(xdg_toplevel::State::Resizing);
-            });
-
-            surface.send_pending_configure();
-
-            let grab = ResizeSurfaceGrab::start(
-                start_data,
-                window,
-                edges.into(),
-                Rectangle::new(initial_window_location, initial_window_size),
-            );
-
-            pointer.set_grab(self, grab, serial, Focus::Clear);
-        }
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
-        // TODO popup grabs
-    }
+    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {}
 }
-
-// Xdg Shell
 delegate_xdg_shell!(HobbitWm);
-
-fn check_grab(
-    seat: &Seat<HobbitWm>,
-    surface: &WlSurface,
-    serial: Serial,
-) -> Option<PointerGrabStartData<HobbitWm>> {
-    let pointer = seat.get_pointer()?;
-
-    // Check that this surface has a click grab.
-    if !pointer.has_grab(serial) {
-        return None;
-    }
-
-    let start_data = pointer.grab_start_data()?;
-
-    let (focus, _) = start_data.focus.as_ref()?;
-    // If the focus was for a different surface, ignore the request.
-    if !focus.id().same_client_as(&surface.id()) {
-        return None;
-    }
-
-    Some(start_data)
-}
 
 /// Should be called on `WlSurface::commit`
 pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: &WlSurface) {
@@ -204,34 +110,6 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
         }
     }
 }
-
-impl XdgDecorationHandler for HobbitWm {
-    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ServerSide);
-        });
-    }
-    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: zxdg_toplevel_decoration_v1::Mode) {
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(mode);
-        });
-
-        if toplevel.is_initial_configure_sent() {
-            toplevel.send_configure();
-        }
-    }
-
-    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ServerSide);
-        });
-
-        if toplevel.is_initial_configure_sent() {
-            toplevel.send_configure();
-        }
-    }
-}
-delegate_xdg_decoration!(HobbitWm);
 
 impl HobbitWm {
     fn unconstrain_popup(&self, popup: &PopupSurface) {

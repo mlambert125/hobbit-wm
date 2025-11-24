@@ -1,11 +1,11 @@
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        AbsolutePositionEvent, ButtonState, Event, InputBackend, InputEvent, KeyState,
+        KeyboardKeyEvent, PointerButtonEvent,
     },
     input::{
         keyboard::{FilterResult, keysyms},
-        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+        pointer::{ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::SERIAL_COUNTER,
@@ -35,12 +35,6 @@ impl HobbitWm {
                             && modifiers_state.ctrl
                         {
                             std::process::Command::new("alacritty").spawn().ok();
-                            FilterResult::Intercept(())
-                        } else if key_sym.raw() == keysyms::KEY_space
-                            && press_state == KeyState::Pressed
-                            && modifiers_state.ctrl
-                        {
-                            std::process::Command::new("walker").spawn().ok();
                             FilterResult::Intercept(())
                         } else {
                             FilterResult::Forward
@@ -116,45 +110,6 @@ impl HobbitWm {
                         time: event.time_msec(),
                     },
                 );
-                pointer.frame(self);
-            }
-            InputEvent::PointerAxis { event, .. } => {
-                let source = event.source();
-
-                let horizontal_amount = event.amount(Axis::Horizontal).unwrap_or_else(|| {
-                    event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.
-                });
-                let vertical_amount = event.amount(Axis::Vertical).unwrap_or_else(|| {
-                    event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.
-                });
-                let horizontal_amount_discrete = event.amount_v120(Axis::Horizontal);
-                let vertical_amount_discrete = event.amount_v120(Axis::Vertical);
-
-                let mut frame = AxisFrame::new(event.time_msec()).source(source);
-                if horizontal_amount != 0.0 {
-                    frame = frame.value(Axis::Horizontal, horizontal_amount);
-                    if let Some(discrete) = horizontal_amount_discrete {
-                        frame = frame.v120(Axis::Horizontal, discrete as i32);
-                    }
-                }
-                if vertical_amount != 0.0 {
-                    frame = frame.value(Axis::Vertical, vertical_amount);
-                    if let Some(discrete) = vertical_amount_discrete {
-                        frame = frame.v120(Axis::Vertical, discrete as i32);
-                    }
-                }
-
-                if source == AxisSource::Finger {
-                    if event.amount(Axis::Horizontal) == Some(0.0) {
-                        frame = frame.stop(Axis::Horizontal);
-                    }
-                    if event.amount(Axis::Vertical) == Some(0.0) {
-                        frame = frame.stop(Axis::Vertical);
-                    }
-                }
-
-                let pointer = self.seat.get_pointer().unwrap();
-                pointer.axis(self, frame);
                 pointer.frame(self);
             }
             _ => {}

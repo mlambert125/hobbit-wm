@@ -2,16 +2,22 @@
 
 mod handlers;
 
-mod grabs;
 mod input;
 mod state;
 mod winit;
 
-use smithay::reexports::{
-    calloop::EventLoop,
-    wayland_server::{Display, DisplayHandle},
+use std::sync::Arc;
+
+use smithay::{
+    reexports::{
+        calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
+        wayland_server::{Display, DisplayHandle},
+    },
+    wayland::socket::ListeningSocketSource,
 };
 pub use state::HobbitWm;
+
+use crate::state::ClientState;
 
 pub struct CalloopData {
     compositor: HobbitWm,
@@ -25,7 +31,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let display: Display<HobbitWm> = Display::new()?;
     let display_handle = display.handle();
-    let state = HobbitWm::new(&mut event_loop, display);
+
+    let dh = display.handle();
+    let listening_socket = ListeningSocketSource::new_auto().unwrap();
+    let socket_name = listening_socket.socket_name().to_os_string();
+
+    let loop_handle = event_loop.handle();
+
+    loop_handle
+        .insert_source(listening_socket, move |client_stream, _, state| {
+            state
+                .display_handle
+                .insert_client(client_stream, Arc::new(ClientState::default()))
+                .unwrap();
+        })
+        .expect("Failed to init the wayland event source.");
+
+    loop_handle
+        .insert_source(
+            Generic::new(display, Interest::READ, Mode::Level),
+            |_, display, state| {
+                unsafe {
+                    display
+                        .get_mut()
+                        .dispatch_clients(&mut state.compositor)
+                        .unwrap();
+                }
+                Ok(PostAction::Continue)
+            },
+        )
+        .unwrap();
+
+    let state = HobbitWm::new(&mut event_loop, dh, socket_name);
 
     let mut data = CalloopData {
         compositor: state,
