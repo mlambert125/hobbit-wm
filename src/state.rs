@@ -41,7 +41,7 @@ pub struct HobbitWm {
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
     pub seat_state: SeatState<HobbitWm>,
-    pub popups: PopupManager,
+    pub popup_manager: PopupManager,
 
     pub seat: Seat<Self>,
 }
@@ -78,7 +78,7 @@ impl HobbitWm {
             xdg_shell_state,
             shm_state,
             seat_state,
-            popups,
+            popup_manager: popups,
             seat,
         }
     }

@@ -109,7 +109,7 @@ pub fn init_winit(
                     });
 
                     state.space.refresh();
-                    state.popups.cleanup();
+                    state.popup_manager.cleanup();
                     let _ = display.flush_clients();
                     backend.window().request_redraw();
                 }

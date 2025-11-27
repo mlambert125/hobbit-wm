@@ -45,15 +45,10 @@ impl HobbitWm {
             InputEvent::PointerMotion { .. } => {}
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let output = self.space.outputs().next().unwrap();
-
                 let output_geo = self.space.output_geometry(output).unwrap();
-
                 let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
-
                 let serial = SERIAL_COUNTER.next_serial();
-
                 let pointer = self.seat.get_pointer().unwrap();
-
                 let under = self.surface_under(pos);
 
                 pointer.motion(
@@ -70,11 +65,8 @@ impl HobbitWm {
             InputEvent::PointerButton { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
                 let keyboard = self.seat.get_keyboard().unwrap();
-
                 let serial = SERIAL_COUNTER.next_serial();
-
                 let button = event.button_code();
-
                 let button_state = event.state();
 
                 if ButtonState::Pressed == button_state && !pointer.is_grabbed() {

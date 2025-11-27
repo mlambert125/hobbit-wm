@@ -29,7 +29,7 @@ impl XdgShellHandler for HobbitWm {
         let window = Window::new_wayland_window(surface);
 
         let serial = SERIAL_COUNTER.next_serial();
-        self.space.map_element(window, (100, 100), true);
+        self.space.map_element(window, (200, 200), true);
         self.seat
             .get_keyboard()
             .unwrap()
@@ -38,7 +38,7 @@ impl XdgShellHandler for HobbitWm {
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
-        let _ = self.popups.track_popup(PopupKind::Xdg(surface));
+        let _ = self.popup_manager.track_popup(PopupKind::Xdg(surface));
     }
 
     fn reposition_request(

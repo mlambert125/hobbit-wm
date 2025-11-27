@@ -23,6 +23,7 @@ impl CompositorHandler for HobbitWm {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
@@ -37,7 +38,7 @@ impl CompositorHandler for HobbitWm {
             }
         };
 
-        xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
+        xdg_shell::handle_commit(&mut self.popup_manager, &self.space, surface);
     }
 }
 delegate_compositor!(HobbitWm);

@@ -3,6 +3,7 @@ use smithay::{
     input::{Seat, SeatHandler, SeatState},
     reexports::wayland_server::protocol::wl_surface::WlSurface,
 };
+use tracing::info;
 
 use crate::HobbitWm;
 
